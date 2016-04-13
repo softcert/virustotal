@@ -115,16 +115,20 @@ class VirusTotal(object):
 @click.command()
 @click.argument("api-key")
 @click.argument("filename", type=click.Path(exists=True))
+@click.option("--scan/--no-scan", default=True)
 @click.option("--api-url", default=VIRUSTOTAL_API_URL)
 @click.option("--retry-interval", type=click.FLOAT, default=5.0)
-def main(api_key, filename, api_url, retry_interval):
+def main(api_key, filename, scan, api_url, retry_interval):
     vt = VirusTotal(api_key, api_url=api_url, retry_interval=retry_interval)
 
     with open(filename, "rb") as fileobj:
         try:
             report = vt.report(_hash_file(fileobj))
         except UnknownResource:
-            report = vt.scan(fileobj, filename=filename)
+            if scan:
+                report = vt.scan(fileobj, filename=filename)
+            else:
+                report = {}
 
     print json.dumps(report, indent=2)
 
