@@ -1,4 +1,4 @@
-# virustotal
+# VirusTotal
 
 ## Install
 
@@ -6,7 +6,7 @@
 $ pip install .
 ```
 
-# Run
+## Run
 
 Basic usage pattern is:
 
