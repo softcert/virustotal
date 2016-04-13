@@ -202,11 +202,6 @@ def main(api_key, filename, scan, api_url, retry_interval):
         except (UnknownResource, Forbidden):
             pass
 
-        try:
-            result["network-traffic"] = vt.network_traffic(filehash)
-        except (UnknownResource, Forbidden):
-            pass
-
     print json.dumps(result, indent=2)
 
 
