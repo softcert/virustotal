@@ -23,6 +23,19 @@ class RateLimited(StatusCode):
     pass
 
 
+def _request_wrapped(method, url, **kwargs):
+    response = requests.request(method, url, **kwargs)
+
+    if response.status_code == 403:
+        raise Forbidden(response.status_code)
+    elif response.status_code == 204:
+        raise RateLimited(response.status_code)
+    elif response.status_code != 200:
+        raise StatusCode(response.status_code)
+
+    return response.json()
+
+
 class ResponseCode(Exception):
     pass
 
@@ -35,26 +48,13 @@ class WorkInProgress(ResponseCode):
     pass
 
 
-def _request_wrapped(method, url, **kwargs):
-    response = requests.request(method, url, **kwargs)
-
-    if response.status_code == 403:
-        raise Forbidden(response.status_code)
-    elif response.status_code == 204:
-        raise RateLimited(response.status_code)
-    elif response.status_code != 200:
-        raise StatusCode(response.status_code)
-
-    result = response.json()
-    response_code = result["response_code"]
+def _check_response_code(response_code):
     if response_code == 0:
         raise UnknownResource(response_code)
     elif response_code == -2:
         raise WorkInProgress(response_code)
     elif response_code != 1:
         raise ResponseCode(response_code)
-
-    return result
 
 
 def _join_url_path(baseurl, path):
@@ -101,7 +101,7 @@ class VirusTotal(object):
     def report(self, resource):
         while True:
             try:
-                return _request_wrapped(
+                result = _request_wrapped(
                     "POST",
                     self._url("file/report"),
                     data={
@@ -109,13 +109,16 @@ class VirusTotal(object):
                         "resource": resource
                     }
                 )
+                _check_response_code(result["response_code"])
             except (WorkInProgress, RateLimited):
                 time.sleep(self._retry_interval)
+            else:
+                return result
 
     def behaviour(self, filehash):
         while True:
             try:
-                return _request_wrapped(
+                result = _request_wrapped(
                     "GET",
                     self._url("file/behaviour"),
                     params={
@@ -123,13 +126,17 @@ class VirusTotal(object):
                         "hash": filehash
                     }
                 )
+                if "response_code" in result:
+                    _check_response_code(result["response_code"])
             except (WorkInProgress, RateLimited):
                 time.sleep(self._retry_interval)
+            else:
+                return result
 
     def network_traffic(self, filehash):
         while True:
             try:
-                return _request_wrapped(
+                result = _request_wrapped(
                     "GET",
                     self._url("file/network-traffic"),
                     params={
@@ -137,8 +144,12 @@ class VirusTotal(object):
                         "hash": filehash
                     }
                 )
+                if "response_code" in result:
+                    _check_response_code(result["response_code"])
             except (WorkInProgress, RateLimited):
                 time.sleep(self._retry_interval)
+            else:
+                return result
 
     def scan(self, fileobj, filename=None):
         basename = os.path.basename(filename)
@@ -146,7 +157,7 @@ class VirusTotal(object):
         while True:
             try:
                 result = _request_wrapped(
-                    "GET",
+                    "POST",
                     self._url("file/scan"),
                     data={
                         "apikey": self._api_key
@@ -155,6 +166,7 @@ class VirusTotal(object):
                         ("file", (basename, fileobj))
                     ]
                 )
+                _check_response_code(result["response_code"])
             except RateLimited:
                 time.sleep(self._retry_interval)
             else:
@@ -184,10 +196,15 @@ def main(api_key, filename, scan, api_url, retry_interval):
 
     if report is not None:
         result["report"] = report
+
         try:
             result["behaviour"] = vt.behaviour(filehash)
+        except (UnknownResource, Forbidden):
+            pass
+
+        try:
             result["network-traffic"] = vt.network_traffic(filehash)
-        except Forbidden:
+        except (UnknownResource, Forbidden):
             pass
 
     print json.dumps(result, indent=2)
