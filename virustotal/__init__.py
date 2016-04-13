@@ -11,12 +11,50 @@ import posixpath
 VIRUSTOTAL_API_URL = "https://www.virustotal.com/vtapi/v2/"
 
 
-class UnknownResponseCode(Exception):
+class StatusCode(Exception):
     pass
 
 
-class UnknownResource(Exception):
+class Forbidden(StatusCode):
     pass
+
+
+class RateLimited(StatusCode):
+    pass
+
+
+class ResponseCode(Exception):
+    pass
+
+
+class UnknownResource(ResponseCode):
+    pass
+
+
+class WorkInProgress(ResponseCode):
+    pass
+
+
+def _request_wrapped(method, url, **kwargs):
+    response = requests.request(method, url, **kwargs)
+
+    if response.status_code == 403:
+        raise Forbidden(response.status_code)
+    elif response.status_code == 204:
+        raise RateLimited(response.status_code)
+    elif response.status_code != 200:
+        raise StatusCode(response.status_code)
+
+    result = response.json()
+    response_code = result["response_code"]
+    if response_code == 0:
+        raise UnknownResource(response_code)
+    elif response_code == -2:
+        raise WorkInProgress(response_code)
+    elif response_code != 1:
+        raise ResponseCode(response_code)
+
+    return result
 
 
 def _join_url_path(baseurl, path):
@@ -62,54 +100,65 @@ class VirusTotal(object):
 
     def report(self, resource):
         while True:
-            response = requests.post(
-                self._url("file/report"),
-                data={
-                    "apikey": self._api_key,
-                    "resource": resource
-                }
-            )
+            try:
+                return _request_wrapped(
+                    "POST",
+                    self._url("file/report"),
+                    data={
+                        "apikey": self._api_key,
+                        "resource": resource
+                    }
+                )
+            except (WorkInProgress, RateLimited):
+                time.sleep(self._retry_interval)
 
-            if response.status_code != 204:
-                response.raise_for_status()
-                report = response.json()
+    def behaviour(self, filehash):
+        while True:
+            try:
+                return _request_wrapped(
+                    "GET",
+                    self._url("file/behaviour"),
+                    params={
+                        "apikey": self._api_key,
+                        "hash": filehash
+                    }
+                )
+            except (WorkInProgress, RateLimited):
+                time.sleep(self._retry_interval)
 
-                response_code = report["response_code"]
-                if response_code == 1:
-                    return report
-
-                if response_code == 0:
-                    raise UnknownResource()
-                elif response_code != -2:
-                    raise UnknownResponseCode(response_code, report["verbose_msg"])
-            time.sleep(self._retry_interval)
+    def network_traffic(self, filehash):
+        while True:
+            try:
+                return _request_wrapped(
+                    "GET",
+                    self._url("file/network-traffic"),
+                    params={
+                        "apikey": self._api_key,
+                        "hash": filehash
+                    }
+                )
+            except (WorkInProgress, RateLimited):
+                time.sleep(self._retry_interval)
 
     def scan(self, fileobj, filename=None):
         basename = os.path.basename(filename)
 
         while True:
-            response = requests.post(
-                self._url("file/scan"),
-                data={
-                    "apikey": self._api_key
-                },
-                files=[
-                    ("file", (basename, fileobj))
-                ]
-            )
-
-            if response.status_code == 204:
+            try:
+                result = _request_wrapped(
+                    "GET",
+                    self._url("file/scan"),
+                    data={
+                        "apikey": self._api_key
+                    },
+                    files=[
+                        ("file", (basename, fileobj))
+                    ]
+                )
+            except RateLimited:
                 time.sleep(self._retry_interval)
-                continue
-
-            response.raise_for_status()
-            report = response.json()
-
-            response_code = report["response_code"]
-            if response_code != 1:
-                raise UnknownResponseCode(response_code, report["verbose_msg"])
-
-            return self.report(report["scan_id"])
+            else:
+                return self.report(result["scan_id"])
 
 
 @click.command()
@@ -122,15 +171,26 @@ def main(api_key, filename, scan, api_url, retry_interval):
     vt = VirusTotal(api_key, api_url=api_url, retry_interval=retry_interval)
 
     with open(filename, "rb") as fileobj:
+        filehash = _hash_file(fileobj)
         try:
-            report = vt.report(_hash_file(fileobj))
+            report = vt.report(filehash)
         except UnknownResource:
             if scan:
                 report = vt.scan(fileobj, filename=filename)
             else:
-                report = {}
+                report = None
 
-    print json.dumps(report, indent=2)
+    result = {}
+
+    if report is not None:
+        result["report"] = report
+        try:
+            result["behaviour"] = vt.behaviour(filehash)
+            result["network-traffic"] = vt.network_traffic(filehash)
+        except Forbidden:
+            pass
+
+    print json.dumps(result, indent=2)
 
 
 if __name__ == "__main__":
