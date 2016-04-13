@@ -84,7 +84,7 @@ class VirusTotal(object):
                     raise UnknownResponseCode(response_code, report["verbose_msg"])
             time.sleep(self._retry_interval)
 
-    def scan_file(self, fileobj, filename=None):
+    def scan(self, fileobj, filename=None):
         basename = os.path.basename(filename)
 
         while True:
